@@ -1,0 +1,38 @@
+{
+  "name": "yuki-cat",
+  "version": "0.1.0",
+  "description": "A tiny ragdoll desktop kitten for macOS.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "env -u ELECTRON_RUN_AS_NODE electron .",
+    "dev": "env -u ELECTRON_RUN_AS_NODE electron .",
+    "dist": "electron-builder --mac"
+  },
+  "keywords": [
+    "desktop-pet",
+    "cat",
+    "macos",
+    "electron"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^30.5.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.yukicat.desktop",
+    "productName": "YukiCat",
+    "mac": {
+      "category": "public.app-category.entertainment",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ]
+  }
+}

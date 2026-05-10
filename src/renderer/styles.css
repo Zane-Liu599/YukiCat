@@ -1,0 +1,178 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  user-select: none;
+}
+
+body {
+  display: grid;
+  place-items: center;
+}
+
+.pet {
+  position: relative;
+  width: 320px;
+  height: 320px;
+  -webkit-app-region: drag;
+}
+
+.close-button {
+  position: absolute;
+  top: 10px;
+  right: 18px;
+  z-index: 20;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  color: rgba(255, 255, 255, 0);
+  background: rgba(68, 52, 46, 0);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.pet:hover .close-button,
+.close-button:focus-visible {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(68, 52, 46, 0.65);
+}
+
+.close-button:hover {
+  transform: scale(1.08);
+}
+
+.cat {
+  position: absolute;
+  left: 8px;
+  bottom: 4px;
+  width: 300px;
+  height: 300px;
+  --face: 1;
+  transform-origin: 50% 86%;
+  animation: idle-breathe 4.8s ease-in-out infinite;
+}
+
+.cat-frame {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  filter: drop-shadow(0 18px 16px rgba(53, 42, 36, 0.22));
+  transform-origin: 50% 84%;
+}
+
+.cat.is-crawling {
+  animation: none;
+}
+
+.cat.fallback-turn .cat-frame {
+  animation: fallback-turn 1.8s ease-in-out;
+}
+
+.cat.is-facing-left {
+  --face: -1;
+}
+
+.eyelid {
+  position: absolute;
+  z-index: 3;
+  width: 24px;
+  height: 15px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 52% 106%, rgba(70, 58, 52, 0.55), transparent 38%),
+    linear-gradient(180deg, rgba(205, 184, 156, 0.96), rgba(110, 91, 78, 0.96));
+  opacity: 0;
+  transform: scaleY(0);
+  transform-origin: 50% 15%;
+  pointer-events: none;
+  animation: blink 6.4s infinite;
+}
+
+.cat.hide-css-blink .eyelid {
+  display: none;
+}
+
+.cat.has-frame-blink .eyelid {
+  display: none;
+}
+
+.cat.blink-now .eyelid {
+  animation: blink-now 240ms ease-in-out;
+}
+
+.eyelid-left {
+  left: 185px;
+  top: 63px;
+}
+
+.eyelid-right {
+  left: 226px;
+  top: 61px;
+  animation-delay: 0.03s;
+}
+
+@keyframes idle-breathe {
+  0%,
+  100% {
+    transform: translateY(0) scaleX(var(--face)) scaleY(1);
+  }
+  50% {
+    transform: translateY(3px) scaleX(calc(var(--face) * 1.012)) scaleY(0.992);
+  }
+}
+
+@keyframes blink {
+  0%,
+  88%,
+  91%,
+  100% {
+    opacity: 0;
+    transform: scaleY(0);
+  }
+  89.4%,
+  89.9% {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+@keyframes blink-now {
+  0% {
+    opacity: 0;
+    transform: scaleY(0);
+  }
+  48%,
+  56% {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scaleY(0);
+  }
+}
+
+@keyframes fallback-turn {
+  0%,
+  100% {
+    transform: scaleX(1) scaleY(1);
+  }
+  45%,
+  55% {
+    transform: translateX(8px) scaleX(0.72) scaleY(1.02);
+  }
+}
