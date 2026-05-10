@@ -1,8 +1,10 @@
-const { app, BrowserWindow, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
 let catWindow;
+let tray;
+let isPassThroughEnabled = true;
 const rendererRoot = path.join(__dirname, 'renderer');
 const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 
@@ -42,6 +44,99 @@ async function listAnimationFrames(frameDirectory) {
   }
 }
 
+function sendPassThroughMode() {
+  if (!catWindow || catWindow.isDestroyed()) {
+    return;
+  }
+
+  catWindow.webContents.send('yuki-cat:pass-through-mode', isPassThroughEnabled);
+  if (!isPassThroughEnabled) {
+    catWindow.setIgnoreMouseEvents(false);
+  }
+}
+
+function setPassThroughMode(enabled) {
+  isPassThroughEnabled = enabled;
+  sendPassThroughMode();
+  updateTrayMenu();
+}
+
+function showCatWindow() {
+  if (!catWindow || catWindow.isDestroyed()) {
+    createCatWindow();
+    return;
+  }
+
+  catWindow.showInactive();
+}
+
+function hideCatWindow() {
+  if (!catWindow || catWindow.isDestroyed()) {
+    return;
+  }
+
+  catWindow.hide();
+}
+
+function createTrayIcon() {
+  const iconPath = path.join(rendererRoot, 'assets/yuki-sit-right.png');
+  const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 });
+
+  if (process.platform === 'darwin') {
+    icon.setTemplateImage(true);
+  }
+
+  return icon;
+}
+
+function updateTrayMenu() {
+  if (!tray) {
+    return;
+  }
+
+  const isVisible = Boolean(catWindow && !catWindow.isDestroyed() && catWindow.isVisible());
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: isVisible ? '隐藏小猫' : '显示小猫',
+      click: () => {
+        if (isVisible) {
+          hideCatWindow();
+        } else {
+          showCatWindow();
+        }
+        updateTrayMenu();
+      }
+    },
+    {
+      label: '透明区域点穿',
+      type: 'checkbox',
+      checked: isPassThroughEnabled,
+      click: (menuItem) => setPassThroughMode(menuItem.checked)
+    },
+    { type: 'separator' },
+    {
+      label: '退出 YukiCat',
+      click: () => app.quit()
+    }
+  ]);
+
+  tray.setContextMenu(contextMenu);
+}
+
+function createTray() {
+  if (tray) {
+    return;
+  }
+
+  tray = new Tray(createTrayIcon());
+  tray.setToolTip('YukiCat');
+  tray.on('click', () => {
+    showCatWindow();
+    updateTrayMenu();
+  });
+  updateTrayMenu();
+}
+
 function createCatWindow() {
   const { workAreaSize } = screen.getPrimaryDisplay();
   const width = 320;
@@ -76,7 +171,17 @@ function createCatWindow() {
   catWindow.setAlwaysOnTop(true, 'floating');
 
   catWindow.loadFile(path.join(__dirname, 'renderer/index.html'));
-  catWindow.once('ready-to-show', () => catWindow.showInactive());
+  catWindow.once('ready-to-show', () => {
+    catWindow.showInactive();
+    sendPassThroughMode();
+    updateTrayMenu();
+  });
+  catWindow.on('show', updateTrayMenu);
+  catWindow.on('hide', updateTrayMenu);
+  catWindow.on('closed', () => {
+    catWindow = null;
+    updateTrayMenu();
+  });
 }
 
 app.whenReady().then(() => {
@@ -84,6 +189,7 @@ app.whenReady().then(() => {
     app.dock.hide();
   }
 
+  createTray();
   createCatWindow();
 
   app.on('activate', () => {
@@ -104,6 +210,19 @@ ipcMain.on('yuki-cat:move-by', (_event, deltaX, deltaY) => {
 
   const [x, y] = catWindow.getPosition();
   catWindow.setPosition(Math.round(x + deltaX), Math.round(y + deltaY), false);
+});
+
+ipcMain.on('yuki-cat:set-ignore-mouse-events', (_event, shouldIgnore) => {
+  if (!catWindow || catWindow.isDestroyed()) {
+    return;
+  }
+
+  if (!isPassThroughEnabled) {
+    catWindow.setIgnoreMouseEvents(false);
+    return;
+  }
+
+  catWindow.setIgnoreMouseEvents(Boolean(shouldIgnore), { forward: true });
 });
 
 ipcMain.handle('yuki-cat:list-animation-frames', (_event, frameDirectory) => listAnimationFrames(frameDirectory));
