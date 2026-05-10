@@ -225,6 +225,10 @@ ipcMain.on('yuki-cat:set-ignore-mouse-events', (_event, shouldIgnore) => {
   catWindow.setIgnoreMouseEvents(Boolean(shouldIgnore), { forward: true });
 });
 
+ipcMain.on('yuki-cat:set-pass-through-mode', (_event, enabled) => {
+  setPassThroughMode(Boolean(enabled));
+});
+
 ipcMain.handle('yuki-cat:list-animation-frames', (_event, frameDirectory) => listAnimationFrames(frameDirectory));
 
 app.on('window-all-closed', () => {
