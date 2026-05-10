@@ -127,12 +127,27 @@ function preloadFrame(src) {
   });
 }
 
+async function resolveSequenceFrames(sequence) {
+  let frames = Array.isArray(sequence.frames) ? sequence.frames : [];
+
+  if (sequence.frameDirectory && window.yukiCat?.listAnimationFrames) {
+    const directoryFrames = await window.yukiCat.listAnimationFrames(sequence.frameDirectory);
+
+    if (directoryFrames.length > 0) {
+      frames = directoryFrames;
+    }
+  }
+
+  return sequence.reverse ? [...frames].reverse() : frames;
+}
+
 async function preloadSequences(config) {
   const entries = Object.entries(config.sequences);
   const loadedSequences = {};
 
   await Promise.all(entries.map(async ([name, sequence]) => {
-    const frames = await Promise.all((sequence.frames ?? []).map(preloadFrame));
+    const resolvedFrames = await resolveSequenceFrames(sequence);
+    const frames = await Promise.all(resolvedFrames.map(preloadFrame));
     loadedSequences[name] = {
       ...sequence,
       frames: frames.filter(Boolean)

@@ -1,7 +1,46 @@
 const { app, BrowserWindow, ipcMain, screen } = require('electron');
+const fs = require('node:fs/promises');
 const path = require('node:path');
 
 let catWindow;
+const rendererRoot = path.join(__dirname, 'renderer');
+const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+
+function toRendererRelativePath(absolutePath) {
+  return `./${path.relative(rendererRoot, absolutePath).split(path.sep).join('/')}`;
+}
+
+function resolveRendererPath(relativePath) {
+  if (typeof relativePath !== 'string' || path.isAbsolute(relativePath)) {
+    return null;
+  }
+
+  const sanitizedPath = relativePath.replace(/\\/g, '/').replace(/^\.?\//, '');
+  const absolutePath = path.resolve(rendererRoot, sanitizedPath);
+  const isInsideRenderer = absolutePath === rendererRoot || absolutePath.startsWith(`${rendererRoot}${path.sep}`);
+
+  return isInsideRenderer ? absolutePath : null;
+}
+
+async function listAnimationFrames(frameDirectory) {
+  const absoluteDirectory = resolveRendererPath(frameDirectory);
+
+  if (!absoluteDirectory) {
+    return [];
+  }
+
+  try {
+    const entries = await fs.readdir(absoluteDirectory, { withFileTypes: true });
+
+    return entries
+      .filter((entry) => entry.isFile() && imageExtensions.has(path.extname(entry.name).toLowerCase()))
+      .map((entry) => entry.name)
+      .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' }))
+      .map((fileName) => toRendererRelativePath(path.join(absoluteDirectory, fileName)));
+  } catch {
+    return [];
+  }
+}
 
 function createCatWindow() {
   const { workAreaSize } = screen.getPrimaryDisplay();
@@ -66,6 +105,8 @@ ipcMain.on('yuki-cat:move-by', (_event, deltaX, deltaY) => {
   const [x, y] = catWindow.getPosition();
   catWindow.setPosition(Math.round(x + deltaX), Math.round(y + deltaY), false);
 });
+
+ipcMain.handle('yuki-cat:list-animation-frames', (_event, frameDirectory) => listAnimationFrames(frameDirectory));
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

@@ -30,7 +30,7 @@ npm run dist
 
 ## 动画帧接口
 
-把拆分好的 PNG 放到 `src/renderer/assets/frames/` 下面，然后在 `src/renderer/animations.json` 里填入对应序列即可。
+把拆分好的 PNG 放到 `src/renderer/assets/frames/` 下面，然后在 `src/renderer/animations.json` 里给对应序列填 `frameDirectory` 即可。应用启动时会读取这个文件夹下的图片文件，并按文件名从小到大自然排序，例如 `sit_to_lie_09.png` 会排在 `sit_to_lie_10.png` 前面。
 
 建议目录：
 
@@ -56,4 +56,16 @@ src/renderer/assets/frames/crawl/
 
 - `fps`：每秒帧数
 - `loop`：是否循环
-- `frames`：图片路径数组，路径相对 `src/renderer/index.html`
+- `frameDirectory`：自动读取的帧目录，路径相对 `src/renderer/index.html`
+- `reverse`：是否把目录读取到的帧倒序播放，适合复用同一组帧做反向动作
+- `frames`：手写图片路径数组，路径相对 `src/renderer/index.html`。只有需要重复、跳帧或特殊顺序时才需要用它
+
+示例：
+
+```json
+"sitToLie": {
+  "fps": 25,
+  "loop": false,
+  "frameDirectory": "./assets/frames/sit-to-lie"
+}
+```
