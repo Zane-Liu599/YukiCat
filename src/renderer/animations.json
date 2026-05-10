@@ -2,24 +2,11 @@
   "defaultFrame": "./assets/yuki-sit-right.png",
   "sequences": {
     "idle": {
-      "fps": 6,
+      "fps": 2,
       "loop": true,
       "frames": [
         "./assets/frames/sit-right/sit_right_00.png",
-        "./assets/frames/sit-right/sit_right_02.png",
-        "./assets/frames/sit-right/sit_right_03.png",
-        "./assets/frames/sit-right/sit_right_04.png",
-        "./assets/frames/sit-right/sit_right_05.png",
-        "./assets/frames/sit-right/sit_right_06.png",
-        "./assets/frames/sit-right/sit_right_07.png",
-        "./assets/frames/sit-right/sit_right_08.png",
-        "./assets/frames/sit-right/sit_right_09.png",
-        "./assets/frames/sit-right/sit_right_08.png",
-        "./assets/frames/sit-right/sit_right_07.png",
-        "./assets/frames/sit-right/sit_right_06.png",
-        "./assets/frames/sit-right/sit_right_05.png",
-        "./assets/frames/sit-right/sit_right_04.png",
-        "./assets/frames/sit-right/sit_right_03.png"
+        "./assets/frames/sit-right/sit_right_01.png"
       ]
     },
     "blink": {
