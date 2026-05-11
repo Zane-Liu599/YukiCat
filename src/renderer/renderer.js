@@ -95,6 +95,11 @@ const fallbackConfig = {
       fps: 10,
       loop: true,
       frames: []
+    },
+    crawlToLie: {
+      fps: 25,
+      loop: false,
+      frames: []
     }
   }
 };
@@ -661,6 +666,11 @@ class CatBehavior {
       await this.player.playOnce('sitToLie');
     } else {
       this.player.setFrame(this.player.getLastFrame('sitToLie'), 'lie');
+    }
+
+    if (this.player.hasSequenceFrames('crawlToLie', 2)) {
+      await this.player.playOnce('crawlToLie');
+      this.player.setFrame(this.player.getLastFrame('crawlToLie'), 'lie');
     }
 
     if (!this.interactionTracker.hasInteractedSince(sleepStartedAt)) {

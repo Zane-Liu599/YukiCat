@@ -61,9 +61,14 @@
       "reverse": true
     },
     "crawl": {
-      "fps": 10,
+      "fps": 25,
       "loop": true,
-      "frames": []
+      "frameDirectory": "./assets/frames/crawl"
+    },
+    "crawlToLie": {
+      "fps": 25,
+      "loop": false,
+      "frameDirectory": "./assets/frames/crawl-to-lie"
     },
     "sitToLie": {
       "fps": 25,
