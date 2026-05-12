@@ -8,5 +8,9 @@ contextBridge.exposeInMainWorld('yukiCat', {
   onPassThroughModeChanged: (callback) => {
     ipcRenderer.on('yuki-cat:pass-through-mode', (_event, enabled) => callback(enabled));
   },
+  onDebugAction: (callback) => {
+    ipcRenderer.on('yuki-cat:debug-action', (_event, action) => callback(action));
+  },
+  sendDebugActionResult: (result) => ipcRenderer.send('yuki-cat:debug-action-result', result),
   listAnimationFrames: (frameDirectory) => ipcRenderer.invoke('yuki-cat:list-animation-frames', frameDirectory)
 });

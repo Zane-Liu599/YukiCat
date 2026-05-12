@@ -574,26 +574,34 @@ class CatBehavior {
     this.interactionTracker = interactionTracker;
     this.currentSitDirection = 1;
     this.nextCrawlRestAt = 0;
+    this.debugActionQueue = [];
+    this.debugActionResolver = null;
   }
 
   async start() {
     this.setSittingPose(1);
-    await wait(timings.initialPause);
+    await this.waitForDebugActionOrTimeout(timings.initialPause);
 
     while (true) {
+      await this.runQueuedDebugActions();
+
       if (this.shouldEnterCrawlRest()) {
         await this.enterLongIdleCrawlRest();
         continue;
       }
 
-      await wait(Math.min(randomDuration(timings.behaviorMinPause, timings.behaviorRandomPause), this.timeUntilCrawlRest()));
+      await this.waitForDebugActionOrTimeout(
+        Math.min(randomDuration(timings.behaviorMinPause, timings.behaviorRandomPause), this.timeUntilCrawlRest())
+      );
+      await this.runQueuedDebugActions();
 
       if (this.shouldEnterCrawlRest()) {
         continue;
       }
 
       await this.blink();
-      await wait(randomDuration(timings.postBlinkMinPause, timings.postBlinkRandomPause));
+      await this.waitForDebugActionOrTimeout(randomDuration(timings.postBlinkMinPause, timings.postBlinkRandomPause));
+      await this.runQueuedDebugActions();
 
       if (this.shouldEnterCrawlRest()) {
         continue;
@@ -601,6 +609,132 @@ class CatBehavior {
 
       await this.playRandomAwakeBehavior();
     }
+  }
+
+  queueDebugAction(action) {
+    const normalizedAction = CatBehavior.normalizeDebugAction(action);
+    const debugAction = this.debugActionMap[normalizedAction] ? normalizedAction : this.resolveSequenceDebugAction(action);
+
+    if (!debugAction) {
+      return {
+        ok: false,
+        message: `unknown action "${action}". Try a behavior action or animation sequence name.`
+      };
+    }
+
+    this.debugActionQueue.push(debugAction);
+    this.interactionTracker.record();
+
+    if (this.debugActionResolver) {
+      this.debugActionResolver();
+      this.debugActionResolver = null;
+    }
+
+    return {
+      ok: true,
+      message: `queued "${debugAction.replace(/^sequence:/, '')}"`
+    };
+  }
+
+  async runQueuedDebugActions() {
+    while (this.debugActionQueue.length > 0) {
+      const action = this.debugActionQueue.shift();
+      await this.runDebugAction(action);
+    }
+  }
+
+  async runDebugAction(action) {
+    this.player.stop();
+
+    if (action.startsWith('sequence:')) {
+      await this.playDebugSequence(action.slice('sequence:'.length));
+      return;
+    }
+
+    await this.debugActionMap[action]();
+  }
+
+  async playDebugSequence(name) {
+    if (!this.player.hasSequenceFrames(name, 1)) {
+      return;
+    }
+
+    const sequence = this.player.getSequence(name);
+
+    if (sequence.frames.length > 1) {
+      await this.player.playOnce(name);
+      this.player.setFrame(sequence.frames[sequence.frames.length - 1], name);
+      return;
+    }
+
+    this.player.setFrame(sequence.frames[0], name);
+  }
+
+  resolveSequenceDebugAction(action) {
+    const key = String(action ?? '').trim().toLowerCase().replace(/[-_\s]/g, '');
+    const sequenceName = Object.keys(this.player.config.sequences).find((name) => name.toLowerCase() === key);
+
+    return sequenceName ? `sequence:${sequenceName}` : null;
+  }
+
+  waitForDebugActionOrTimeout(duration) {
+    if (this.debugActionQueue.length > 0) {
+      return Promise.resolve(true);
+    }
+
+    return new Promise((resolve) => {
+      const timeoutId = window.setTimeout(() => {
+        if (this.debugActionResolver === onDebugAction) {
+          this.debugActionResolver = null;
+        }
+
+        resolve(false);
+      }, duration);
+
+      const onDebugAction = () => {
+        window.clearTimeout(timeoutId);
+        resolve(true);
+      };
+
+      this.debugActionResolver = onDebugAction;
+    });
+  }
+
+  get debugActionMap() {
+    return {
+      sit: async () => this.setSittingPose(),
+      'sit-left': async () => this.setSittingPose(-1),
+      'sit-right': async () => this.setSittingPose(1),
+      blink: () => this.blink(),
+      front: () => this.turnSideToFrontAndBack(),
+      back: () => this.turnSideToBackAndReturn(),
+      'front-back': () => this.turnFrontToBackAndReturn(),
+      walk: () => this.walkShortDistance(),
+      crawl: () => this.enterCrawlPose(),
+      'crawl-rest': () => this.enterLongIdleCrawlRest(),
+      lie: () => this.enterLiePose(),
+      'leave-crawl': () => this.leaveCrawlPose(),
+      'leave-lie': () => this.leaveLiePose(),
+      random: () => this.playRandomAwakeBehavior()
+    };
+  }
+
+  static normalizeDebugAction(action) {
+    const normalized = String(action ?? '').trim().toLowerCase().replace(/_/g, '-');
+    const aliases = {
+      left: 'sit-left',
+      right: 'sit-right',
+      turnfront: 'front',
+      turn: 'front',
+      turnback: 'back',
+      frontback: 'front-back',
+      turnfrontback: 'front-back',
+      sleep: 'lie',
+      rest: 'crawl-rest',
+      leave: 'leave-lie'
+    };
+
+    return aliases[normalized] ?? normalized;
   }
 
   shouldEnterCrawlRest() {
@@ -779,6 +913,19 @@ class CatBehavior {
     return false;
   }
 
+  async enterLiePose() {
+    const didEnterCrawl = await this.enterCrawlPose();
+
+    if (!didEnterCrawl) {
+      return;
+    }
+
+    if (this.player.hasSequenceFrames('crawlToLie', 2)) {
+      await this.player.playOnce('crawlToLie');
+      this.player.setFrame(this.player.getLastFrame('crawlToLie'), 'lie');
+    }
+  }
+
   async leaveCrawlPose() {
     if (this.player.hasSequenceFrames('crawlToSit', 2)) {
       await this.player.playOnce('crawlToSit');
@@ -842,6 +989,10 @@ async function start() {
   });
 
   mousePassThrough.bind();
+  window.yukiCat.onDebugAction((action) => {
+    const result = behavior.queueDebugAction(action);
+    window.yukiCat.sendDebugActionResult(result);
+  });
   behavior.start();
 }
 

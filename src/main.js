@@ -1,12 +1,30 @@
 const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const readline = require('node:readline');
 
 let catWindow;
 let tray;
 let isPassThroughEnabled = true;
+let debugReadline;
 const rendererRoot = path.join(__dirname, 'renderer');
 const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+const debugActions = [
+  'sit',
+  'sit-left',
+  'sit-right',
+  'blink',
+  'front',
+  'back',
+  'front-back',
+  'walk',
+  'crawl',
+  'crawl-rest',
+  'lie',
+  'leave-crawl',
+  'leave-lie',
+  'random'
+];
 
 function toRendererRelativePath(absolutePath) {
   return `./${path.relative(rendererRoot, absolutePath).split(path.sep).join('/')}`;
@@ -59,6 +77,50 @@ function setPassThroughMode(enabled) {
   isPassThroughEnabled = enabled;
   sendPassThroughMode();
   updateTrayMenu();
+}
+
+function sendDebugAction(action) {
+  if (!catWindow || catWindow.isDestroyed()) {
+    console.log('[debug] cat window is not ready');
+    return;
+  }
+
+  catWindow.webContents.send('yuki-cat:debug-action', action);
+}
+
+function printDebugHelp() {
+  console.log(`[debug] type an action then Enter: ${debugActions.join(', ')}`);
+  console.log('[debug] animation sequence names also work, e.g. crawlToLie, lieToCrawl, turnFrontToBack');
+  console.log('[debug] type help/actions to show this list again');
+}
+
+function setupDebugInput() {
+  if (debugReadline || !process.stdin.isTTY) {
+    return;
+  }
+
+  debugReadline = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: true
+  });
+
+  printDebugHelp();
+
+  debugReadline.on('line', (line) => {
+    const action = line.trim();
+
+    if (!action) {
+      return;
+    }
+
+    if (action === 'help' || action === 'actions') {
+      printDebugHelp();
+      return;
+    }
+
+    sendDebugAction(action);
+  });
 }
 
 function showCatWindow() {
@@ -191,6 +253,7 @@ app.whenReady().then(() => {
 
   createTray();
   createCatWindow();
+  setupDebugInput();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -227,6 +290,15 @@ ipcMain.on('yuki-cat:set-ignore-mouse-events', (_event, shouldIgnore) => {
 
 ipcMain.on('yuki-cat:set-pass-through-mode', (_event, enabled) => {
   setPassThroughMode(Boolean(enabled));
+});
+
+ipcMain.on('yuki-cat:debug-action-result', (_event, result) => {
+  if (!result || typeof result !== 'object') {
+    return;
+  }
+
+  const prefix = result.ok ? '[debug]' : '[debug:error]';
+  console.log(`${prefix} ${result.message}`);
 });
 
 ipcMain.handle('yuki-cat:list-animation-frames', (_event, frameDirectory) => listAnimationFrames(frameDirectory));
