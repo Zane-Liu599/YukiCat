@@ -28,22 +28,22 @@ const behaviorChances = {
 };
 
 const fallbackConfig = {
-  defaultFrame: './assets/yuki-sit-right.png',
+  defaultFrame: './assets/frames/sit-right/sit_right_00.png',
   sequences: {
     idle: {
       fps: 6,
       loop: true,
-      frames: ['./assets/yuki-sit-right.png']
+      frames: ['./assets/frames/sit-right/sit_right_00.png']
     },
     sitRight: {
       fps: 2,
       loop: false,
-      frames: ['./assets/yuki-sit-right.png']
+      frames: ['./assets/frames/sit-right/sit_right_00.png']
     },
     sitLeft: {
       fps: 2,
       loop: false,
-      frames: ['./assets/yuki-sit-right.png']
+      frames: ['./assets/frames/sit-left/sit_left_00.png']
     },
     blink: {
       fps: 14,
