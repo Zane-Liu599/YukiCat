@@ -8,14 +8,23 @@ const elements = {
 
 const timings = {
   longIdle: 45000,
+  forcedSleepIdle: 120000,
   initialPause: 1800,
   behaviorMinPause: 3600,
   behaviorRandomPause: 3200,
   postBlinkMinPause: 2200,
   postBlinkRandomPause: 4200,
+  crawlRestMinPause: 4500,
+  crawlRestRandomPause: 3500,
+  lieDecisionMinPause: 6500,
+  lieDecisionRandomPause: 8500,
   frontPause: 1200,
   movementStep: 24,
   pokeAnimation: 180
+};
+
+const behaviorChances = {
+  sleepAfterCrawlToLie: 0.42
 };
 
 const fallbackConfig = {
@@ -96,7 +105,17 @@ const fallbackConfig = {
       loop: true,
       frames: []
     },
+    crawlToSit: {
+      fps: 25,
+      loop: false,
+      frames: []
+    },
     crawlToLie: {
+      fps: 25,
+      loop: false,
+      frames: []
+    },
+    lieToCrawl: {
       fps: 25,
       loop: false,
       frames: []
@@ -345,6 +364,25 @@ class InteractionTracker {
       this.waitingResolver = resolve;
     });
   }
+
+  waitForInteractionOrTimeout(duration) {
+    return new Promise((resolve) => {
+      const timeoutId = window.setTimeout(() => {
+        if (this.waitingResolver === onInteraction) {
+          this.waitingResolver = null;
+        }
+
+        resolve(false);
+      }, duration);
+
+      const onInteraction = () => {
+        window.clearTimeout(timeoutId);
+        resolve(true);
+      };
+
+      this.waitingResolver = onInteraction;
+    });
+  }
 }
 
 class MousePassThroughController {
@@ -535,6 +573,7 @@ class CatBehavior {
     this.player = player;
     this.interactionTracker = interactionTracker;
     this.currentSitDirection = 1;
+    this.nextCrawlRestAt = 0;
   }
 
   async start() {
@@ -542,21 +581,21 @@ class CatBehavior {
     await wait(timings.initialPause);
 
     while (true) {
-      if (this.shouldSleep()) {
-        await this.enterLongIdleLie();
+      if (this.shouldEnterCrawlRest()) {
+        await this.enterLongIdleCrawlRest();
         continue;
       }
 
-      await wait(Math.min(randomDuration(timings.behaviorMinPause, timings.behaviorRandomPause), timings.longIdle - this.interactionTracker.inactiveFor()));
+      await wait(Math.min(randomDuration(timings.behaviorMinPause, timings.behaviorRandomPause), this.timeUntilCrawlRest()));
 
-      if (this.shouldSleep()) {
+      if (this.shouldEnterCrawlRest()) {
         continue;
       }
 
       await this.blink();
       await wait(randomDuration(timings.postBlinkMinPause, timings.postBlinkRandomPause));
 
-      if (this.shouldSleep()) {
+      if (this.shouldEnterCrawlRest()) {
         continue;
       }
 
@@ -564,8 +603,16 @@ class CatBehavior {
     }
   }
 
-  shouldSleep() {
-    return this.interactionTracker.inactiveFor() >= timings.longIdle;
+  shouldEnterCrawlRest() {
+    return this.shouldForceSleep() || (this.interactionTracker.inactiveFor() >= timings.longIdle && performance.now() >= this.nextCrawlRestAt);
+  }
+
+  shouldForceSleep() {
+    return this.interactionTracker.inactiveFor() >= timings.forcedSleepIdle;
+  }
+
+  timeUntilCrawlRest() {
+    return Math.max(0, timings.longIdle - this.interactionTracker.inactiveFor(), this.nextCrawlRestAt - performance.now());
   }
 
   setSittingPose(direction = this.currentSitDirection) {
@@ -659,23 +706,92 @@ class CatBehavior {
     }
   }
 
-  async enterLongIdleLie() {
-    const sleepStartedAt = performance.now();
+  async enterLongIdleCrawlRest() {
+    const crawlStartedAt = performance.now();
 
-    if (this.player.hasSequenceFrames('sitToLie', 2)) {
-      await this.player.playOnce('sitToLie');
-    } else {
-      this.player.setFrame(this.player.getLastFrame('sitToLie'), 'lie');
+    const didEnterCrawl = await this.enterCrawlPose();
+
+    if (!didEnterCrawl) {
+      return;
     }
 
-    if (this.player.hasSequenceFrames('crawlToLie', 2)) {
-      await this.player.playOnce('crawlToLie');
-      this.player.setFrame(this.player.getLastFrame('crawlToLie'), 'lie');
+    if (this.interactionTracker.hasInteractedSince(crawlStartedAt)) {
+      await this.leaveCrawlPose();
+      return;
     }
 
-    if (!this.interactionTracker.hasInteractedSince(sleepStartedAt)) {
+    const interactedWhileCrawling = await this.interactionTracker.waitForInteractionOrTimeout(
+      randomDuration(timings.crawlRestMinPause, timings.crawlRestRandomPause)
+    );
+
+    if (interactedWhileCrawling || this.interactionTracker.hasInteractedSince(crawlStartedAt)) {
+      await this.leaveCrawlPose();
+      return;
+    }
+
+    if (!this.player.hasSequenceFrames('crawlToLie', 2)) {
+      await this.leaveCrawlPose();
+      return;
+    }
+
+    await this.player.playOnce('crawlToLie');
+    this.player.setFrame(this.player.getLastFrame('crawlToLie'), 'lie');
+
+    const interactedBeforeDecision = await this.interactionTracker.waitForInteractionOrTimeout(
+      randomDuration(timings.lieDecisionMinPause, timings.lieDecisionRandomPause)
+    );
+
+    if (interactedBeforeDecision || this.interactionTracker.hasInteractedSince(crawlStartedAt)) {
+      await this.leaveLiePose();
+      return;
+    }
+
+    const shouldSleep = this.shouldForceSleep() || Math.random() < behaviorChances.sleepAfterCrawlToLie;
+
+    if (!shouldSleep) {
+      await this.leaveLiePose();
+      this.deferNextCrawlRest();
+      return;
+    }
+
+    if (!this.interactionTracker.hasInteractedSince(crawlStartedAt)) {
       await this.interactionTracker.waitForInteraction();
       this.interactionTracker.record();
+    }
+
+    await this.leaveLiePose();
+  }
+
+  deferNextCrawlRest() {
+    this.nextCrawlRestAt = performance.now() + randomDuration(timings.behaviorMinPause, timings.behaviorRandomPause);
+  }
+
+  async enterCrawlPose() {
+    this.catElement.classList.add('is-crawling');
+
+    if (this.player.hasSequenceFrames('crawl', 2)) {
+      await this.player.playOnce('crawl');
+      this.player.setFrame(this.player.getLastFrame('crawl'), 'crawl');
+      return true;
+    }
+
+    this.setSittingPose();
+    return false;
+  }
+
+  async leaveCrawlPose() {
+    if (this.player.hasSequenceFrames('crawlToSit', 2)) {
+      await this.player.playOnce('crawlToSit');
+    }
+
+    this.setSittingPose();
+  }
+
+  async leaveLiePose() {
+    if (this.player.hasSequenceFrames('lieToCrawl', 2)) {
+      await this.player.playOnce('lieToCrawl');
+      await this.leaveCrawlPose();
+      return;
     }
 
     if (this.player.hasSequenceFrames('lieToSit', 2)) {

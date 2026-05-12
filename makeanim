@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""Crop animation frames, remove white background, and place on a fixed canvas.
+
+Example:
+  ./makeanim /Users/sechsen/Downloads/frames src/renderer/assets/frames/crawl-to-lie \
+    --prefix crawl_to_lie --preview src/renderer/assets/crawl_to_lie_preview.gif
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import shutil
+from collections import deque
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageFilter
+
+
+def parse_size(value: str) -> tuple[int, int]:
+    match = re.fullmatch(r"(\d+)x(\d+)", value.strip().lower())
+    if not match:
+        raise argparse.ArgumentTypeError("size must look like 483x513")
+
+    return int(match.group(1)), int(match.group(2))
+
+
+def natural_key(path: Path) -> tuple[int, str]:
+    match = re.search(r"\d+", path.stem)
+    return (int(match.group(0)) if match else 0, path.name)
+
+
+def edge_background_mask(rgb: Image.Image, white_min: int, neutral_delta: int) -> np.ndarray:
+    arr = np.array(rgb, dtype=np.uint8)
+    channel_max = arr.max(axis=2)
+    channel_min = arr.min(axis=2)
+    bg_candidate = (channel_min >= white_min) & ((channel_max - channel_min) <= neutral_delta)
+    height, width = bg_candidate.shape
+    seen = np.zeros((height, width), dtype=bool)
+    queue: deque[tuple[int, int]] = deque()
+
+    def add(y: int, x: int) -> None:
+        if bg_candidate[y, x] and not seen[y, x]:
+            seen[y, x] = True
+            queue.append((y, x))
+
+    for x in range(width):
+        add(0, x)
+        add(height - 1, x)
+    for y in range(height):
+        add(y, 0)
+        add(y, width - 1)
+
+    while queue:
+        y, x = queue.popleft()
+        for yy in range(max(0, y - 1), min(height, y + 2)):
+            for xx in range(max(0, x - 1), min(width, x + 2)):
+                if bg_candidate[yy, xx] and not seen[yy, xx]:
+                    seen[yy, xx] = True
+                    queue.append((yy, xx))
+
+    return seen
+
+
+def largest_component(mask: np.ndarray) -> np.ndarray:
+    height, width = mask.shape
+    seen = np.zeros((height, width), dtype=bool)
+    ys, xs = np.where(mask)
+    best_pixels: list[tuple[int, int]] = []
+
+    for sy, sx in zip(ys, xs):
+        if seen[sy, sx]:
+            continue
+
+        queue = [(int(sy), int(sx))]
+        seen[sy, sx] = True
+        pixels: list[tuple[int, int]] = []
+
+        for y, x in queue:
+            pixels.append((y, x))
+            for yy in range(max(0, y - 1), min(height, y + 2)):
+                for xx in range(max(0, x - 1), min(width, x + 2)):
+                    if mask[yy, xx] and not seen[yy, xx]:
+                        seen[yy, xx] = True
+                        queue.append((yy, xx))
+
+        if len(pixels) > len(best_pixels):
+            best_pixels = pixels
+
+    component = np.zeros((height, width), dtype=np.uint8)
+    if best_pixels:
+        yy, xx = zip(*best_pixels)
+        component[np.array(yy), np.array(xx)] = 255
+
+    return component
+
+
+def make_cutout(path: Path, white_min: int, neutral_delta: int, edge_blur: float) -> Image.Image:
+    rgb = Image.open(path).convert("RGB")
+    background = edge_background_mask(rgb, white_min, neutral_delta)
+    component = largest_component(~background)
+
+    mask = Image.fromarray(component, mode="L")
+    mask = mask.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.MinFilter(5))
+    hard_mask = mask.point(lambda value: 255 if value > 8 else 0)
+    alpha = hard_mask.filter(ImageFilter.GaussianBlur(edge_blur))
+    bbox = hard_mask.getbbox()
+
+    if not bbox:
+        raise RuntimeError(f"No foreground found in {path}")
+
+    rgba = rgb.convert("RGBA")
+    rgba.putalpha(alpha)
+    return rgba.crop(bbox)
+
+
+def place_on_canvas(
+    sprite: Image.Image,
+    canvas_size: tuple[int, int],
+    anchor_x: int,
+    ground_y: int,
+    scale: float,
+) -> Image.Image:
+    width, height = canvas_size
+    new_size = (
+        max(1, round(sprite.width * scale)),
+        max(1, round(sprite.height * scale)),
+    )
+    resized = sprite.resize(new_size, Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+    x = anchor_x - resized.width // 2
+    y = ground_y - resized.height
+    canvas.alpha_composite(resized, (x, y))
+    return canvas
+
+
+def write_preview(frame_paths: list[Path], output: Path, duration_ms: int) -> None:
+    frames = []
+    for path in frame_paths:
+        rgba = Image.open(path).convert("RGBA")
+        background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        background.alpha_composite(rgba)
+        frames.append(background.convert("P", palette=Image.Palette.ADAPTIVE, colors=255))
+
+    if not frames:
+        return
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    frames[0].save(
+        output,
+        save_all=True,
+        append_images=frames[1:],
+        duration=duration_ms,
+        loop=0,
+    )
+
+
+def build_animation(args: argparse.Namespace) -> None:
+    input_dir = args.input_dir.expanduser().resolve()
+    output_dir = args.output_dir.expanduser()
+    frame_paths = sorted(input_dir.glob(args.glob), key=natural_key)
+
+    if not frame_paths:
+        raise SystemExit(f"No frames matched {args.glob!r} in {input_dir}")
+
+    if args.clean and output_dir.exists():
+        for path in output_dir.glob(f"{args.prefix}_*.png"):
+            path.unlink()
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    cutouts = [
+        make_cutout(path, args.white_min, args.neutral_delta, args.edge_blur)
+        for path in frame_paths
+    ]
+    max_width = max(sprite.width for sprite in cutouts)
+    max_height = max(sprite.height for sprite in cutouts)
+    scale = min(args.max_width / max_width, args.max_height / max_height)
+    anchor_x = args.anchor_x if args.anchor_x is not None else args.canvas[0] // 2
+    written_paths = []
+
+    for index, sprite in enumerate(cutouts, start=args.start_index):
+        canvas = place_on_canvas(sprite, args.canvas, anchor_x, args.ground_y, scale)
+        output_path = output_dir / f"{args.prefix}_{index:02d}.png"
+        canvas.save(output_path, optimize=True)
+        written_paths.append(output_path)
+
+    if args.preview:
+        write_preview(written_paths, args.preview.expanduser(), args.duration_ms)
+
+    print(f"frames: {len(written_paths)}")
+    print(f"canvas: {args.canvas[0]}x{args.canvas[1]}")
+    print(f"anchor: x={anchor_x}, ground_y={args.ground_y}")
+    print(f"source max: {max_width}x{max_height}")
+    print(f"scale: {scale:.4f}")
+    print(f"output: {output_dir}")
+    if args.preview:
+        print(f"preview: {args.preview}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Remove white backgrounds from animation frames and place them on a fixed transparent canvas.",
+    )
+    parser.add_argument("input_dir", type=Path, help="Directory containing source frames such as 1.png, 2.png...")
+    parser.add_argument("output_dir", type=Path, help="Directory to write processed PNG frames into.")
+    parser.add_argument("--prefix", default="anim", help="Output filename prefix. Default: anim")
+    parser.add_argument("--glob", default="*.png", help="Input file glob. Default: *.png")
+    parser.add_argument("--canvas", type=parse_size, default=(483, 513), help="Canvas size. Default: 483x513")
+    parser.add_argument("--ground-y", type=int, default=485, help="Bottom anchor y coordinate. Default: 485")
+    parser.add_argument("--anchor-x", type=int, default=None, help="Horizontal anchor. Default: canvas center")
+    parser.add_argument("--max-width", type=int, default=320, help="Maximum foreground width after scaling. Default: 320")
+    parser.add_argument("--max-height", type=int, default=480, help="Maximum foreground height after scaling. Default: 480")
+    parser.add_argument("--white-min", type=int, default=238, help="Minimum channel value considered background. Default: 238")
+    parser.add_argument("--neutral-delta", type=int, default=24, help="Maximum RGB channel spread for white background. Default: 24")
+    parser.add_argument("--edge-blur", type=float, default=1.1, help="Alpha edge feather radius. Default: 1.1")
+    parser.add_argument("--start-index", type=int, default=1, help="First output frame number. Default: 1")
+    parser.add_argument("--duration-ms", type=int, default=40, help="Preview GIF frame duration. Default: 40")
+    parser.add_argument("--preview", type=Path, default=None, help="Optional preview GIF path.")
+    parser.add_argument("--clean", action=argparse.BooleanOptionalAction, default=True, help="Remove old matching output frames first.")
+    build_animation(parser.parse_args())
+
+
+if __name__ == "__main__":
+    main()
