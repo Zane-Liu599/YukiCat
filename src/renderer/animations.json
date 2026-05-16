@@ -8,6 +8,27 @@
         "./assets/frames/sit-right/sit_right_00.png"
       ]
     },
+    "idle1": {
+      "fps": 25,
+      "loop": false,
+      "frameDirectory": "./assets/frames/idle1"
+    },
+    "idle2": {
+      "fps": 25,
+      "loop": false,
+      "frameDirectory": "./assets/frames/idle2"
+    },
+    "idleFromWalk": {
+      "fps": 25,
+      "loop": false,
+      "frameDirectory": "./assets/frames/IdleFromWalk"
+    },
+    "idleToWalkRight": {
+      "fps": 25,
+      "loop": false,
+      "frameDirectory": "./assets/frames/IdleFromWalk",
+      "reverse": true
+    },
     "sitRight": {
       "fps": 2,
       "loop": false,
@@ -21,6 +42,16 @@
       "frames": [
         "./assets/frames/sit-left/sit_left_00.png"
       ]
+    },
+    "sitRightToLeft": {
+      "fps": 25,
+      "loop": false,
+      "frameDirectory": "./assets/frames/sit-right-to-left"
+    },
+    "sitLeftToRight": {
+      "fps": 25,
+      "loop": false,
+      "frameDirectory": "./assets/frames/sit-left-to-right"
     },
     "blink": {
       "fps": 14,
@@ -95,12 +126,12 @@
     },
     "walkRight": {
       "fps": 25,
-      "loop": true,
+      "loop": false,
       "frameDirectory": "./assets/frames/walk-right"
     },
     "walkLeft": {
       "fps": 25,
-      "loop": true,
+      "loop": false,
       "frameDirectory": "./assets/frames/walk-left"
     }
   }

@@ -4,6 +4,11 @@
 Example:
   ./makeanim /Users/sechsen/Downloads/frames src/renderer/assets/frames/crawl-to-lie \
     --preview src/renderer/assets/crawl_to_lie_preview.gif
+
+adjustment example:
+    ./makeanim src/renderer/assets/frames/crawl-to-lie src/renderer/assets/frames/crawl-to-lie --match-size src/renderer/assets/frames/crawl/crawl_49.png
+    --match-size-basis largest 所有大小一致参数
+
 """
 
 from __future__ import annotations
@@ -18,6 +23,14 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageFilter
+
+AUTO_BACKGROUND_TOLERANCE = 30
+WHITE_BACKGROUND_TOLERANCE = 10
+LIGHT_BACKGROUND_TOLERANCE = 8
+DARK_BACKGROUND_TOLERANCE = 42
+BACKGROUND_COLOR_BUCKET = 16
+BLACK_BACKGROUND_MAX = 56
+MAX_EDGE_BACKGROUND_COLORS = 6
 
 
 def parse_size(value: str) -> tuple[int, int]:
@@ -40,13 +53,36 @@ def normalize_prefix(value: str) -> str:
 
 def alpha_bbox_size(path: Path) -> tuple[int, int]:
     image = Image.open(path).convert("RGBA")
+    return sprite_alpha_bbox_size(image, str(path))
+
+
+def image_size(path: Path) -> tuple[int, int]:
+    image = Image.open(path)
+    return image.size
+
+
+def sprite_alpha_bbox(image: Image.Image, label: str = "image") -> tuple[int, int, int, int]:
     bbox = image.getchannel("A").getbbox()
 
     if not bbox:
-        raise RuntimeError(f"No visible pixels found in reference image: {path}")
+        raise RuntimeError(f"No visible pixels found in {label}")
 
+    return bbox
+
+
+def sprite_alpha_bbox_size(image: Image.Image, label: str = "image") -> tuple[int, int]:
+    bbox = sprite_alpha_bbox(image, label)
     left, top, right, bottom = bbox
     return right - left, bottom - top
+
+
+def alpha_bbox_anchor_for_canvas(path: Path, canvas_size: tuple[int, int]) -> tuple[float, float]:
+    image = Image.open(path).convert("RGBA")
+    left, _top, right, bottom = sprite_alpha_bbox(image, str(path))
+    offset_x = (canvas_size[0] - image.width) / 2
+    offset_y = (canvas_size[1] - image.height) / 2
+
+    return (left + right) / 2 + offset_x, bottom + offset_y
 
 
 def log(message: str, *, quiet: bool = False) -> None:
@@ -54,12 +90,53 @@ def log(message: str, *, quiet: bool = False) -> None:
         print(message, file=sys.stderr, flush=True)
 
 
+def edge_pixels(arr: np.ndarray) -> np.ndarray:
+    return np.concatenate((arr[0, :, :], arr[-1, :, :], arr[:, 0, :], arr[:, -1, :]), axis=0)
+
+
+def dominant_edge_colors(arr: np.ndarray) -> list[np.ndarray]:
+    samples = edge_pixels(arr).astype(np.int16)
+    buckets = (samples // BACKGROUND_COLOR_BUCKET) * BACKGROUND_COLOR_BUCKET
+    colors, counts = np.unique(buckets, axis=0, return_counts=True)
+    order = np.argsort(counts)[::-1]
+    minimum_count = max(4, round(samples.shape[0] * 0.02))
+    dominant = []
+
+    for index in order:
+        if counts[index] < minimum_count and dominant:
+            break
+
+        bucket_samples = samples[np.all(buckets == colors[index], axis=1)]
+        dominant.append(np.rint(bucket_samples.mean(axis=0)).astype(np.int16))
+
+        if len(dominant) >= MAX_EDGE_BACKGROUND_COLORS:
+            break
+
+    return dominant
+
+
 def edge_background_mask(rgb: Image.Image, white_min: int, black_max: int, neutral_delta: int) -> np.ndarray:
-    arr = np.array(rgb, dtype=np.uint8)
+    arr = np.array(rgb, dtype=np.int16)
     channel_max = arr.max(axis=2)
     channel_min = arr.min(axis=2)
     neutral = (channel_max - channel_min) <= neutral_delta
-    bg_candidate = ((channel_min >= white_min) | (channel_max <= black_max)) & neutral
+    bg_candidate = ((channel_min >= 252) | (channel_max <= black_max)) & neutral
+
+    for color in dominant_edge_colors(arr):
+        color_max = int(color.max())
+        color_min = int(color.min())
+        if color_min >= 250:
+            tolerance = WHITE_BACKGROUND_TOLERANCE
+        elif color_min >= white_min:
+            tolerance = LIGHT_BACKGROUND_TOLERANCE
+        elif color_max <= black_max:
+            tolerance = DARK_BACKGROUND_TOLERANCE
+        else:
+            tolerance = AUTO_BACKGROUND_TOLERANCE
+
+        color_distance = np.abs(arr - color).max(axis=2)
+        bg_candidate |= color_distance <= tolerance
+
     height, width = bg_candidate.shape
     seen = np.zeros((height, width), dtype=bool)
     queue: deque[tuple[int, int]] = deque()
@@ -120,20 +197,94 @@ def largest_component(mask: np.ndarray) -> np.ndarray:
     return component
 
 
-def make_cutout(path: Path, white_min: int, black_max: int, neutral_delta: int, edge_blur: float) -> Image.Image:
+def erode_mask(mask: np.ndarray, size: int = 3) -> np.ndarray:
+    image = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
+    return np.array(image.filter(ImageFilter.MinFilter(size)), dtype=np.uint8) > 0
+
+
+def largest_alpha_component(rgba: Image.Image) -> np.ndarray:
+    alpha = np.array(rgba.getchannel("A"), dtype=np.uint8)
+    return largest_component(alpha > 8)
+
+
+def subject_components(mask: np.ndarray) -> np.ndarray:
+    height, width = mask.shape
+    ys, xs = np.where(mask)
+
+    if len(xs) == 0:
+        return np.zeros((height, width), dtype=np.uint8)
+
+    left = int(np.percentile(xs, 0.5))
+    top = int(np.percentile(ys, 0.5))
+    right = int(np.percentile(xs, 99.5)) + 1
+    bottom = int(np.percentile(ys, 99.5)) + 1
+    margin = max(18, round(max(right - left, bottom - top) * 0.08))
+    left = max(0, left - margin)
+    top = max(0, top - margin)
+    right = min(width, right + margin)
+    bottom = min(height, bottom + margin)
+
+    subject = np.zeros((height, width), dtype=np.uint8)
+    subject[top:bottom, left:right] = mask[top:bottom, left:right].astype(np.uint8) * 255
+
+    return subject
+
+
+def strip_light_edge_pixels(rgba: Image.Image, component: np.ndarray, white_min: int, neutral_delta: int) -> np.ndarray:
+    arr = np.array(rgba.convert("RGB"), dtype=np.int16)
+    channel_max = arr.max(axis=2)
+    channel_min = arr.min(axis=2)
+    neutral = (channel_max - channel_min) <= neutral_delta
+    light_pixels = (channel_min >= white_min) & neutral & (component > 0)
+    edge_band = (component > 0) & ~erode_mask(component > 0, 5)
+
+    cleaned = component.copy()
+    cleaned[light_pixels & edge_band] = 0
+
+    return cleaned
+
+
+def clean_subject_mask(
+    rgba: Image.Image,
+    component: np.ndarray,
+    white_min: int,
+    neutral_delta: int,
+    preserve_frame: bool,
+) -> Image.Image:
+    component = strip_light_edge_pixels(rgba, component, white_min, neutral_delta)
+    mask = Image.fromarray(component, mode="L")
+    mask = mask.filter(ImageFilter.MinFilter(5 if preserve_frame else 7))
+
+    return mask.point(lambda value: 255 if value > 8 else 0)
+
+
+def make_cutout(
+    path: Path,
+    white_min: int,
+    black_max: int,
+    neutral_delta: int,
+    edge_blur: float,
+    preserve_frame: bool,
+) -> Image.Image:
     rgba = Image.open(path).convert("RGBA")
     alpha_bbox = rgba.getchannel("A").getbbox()
 
     if alpha_bbox and alpha_bbox != (0, 0, rgba.width, rgba.height):
-        return rgba.crop(alpha_bbox)
+        component = largest_alpha_component(rgba)
+        hard_mask = clean_subject_mask(rgba, component, white_min, neutral_delta, preserve_frame)
+        alpha = hard_mask.filter(ImageFilter.GaussianBlur(edge_blur))
+        bbox = hard_mask.getbbox()
+
+        if not bbox:
+            raise RuntimeError(f"No foreground found in {path}")
+
+        rgba.putalpha(alpha)
+        return rgba if preserve_frame else rgba.crop(bbox)
 
     rgb = rgba.convert("RGB")
     background = edge_background_mask(rgb, white_min, black_max, neutral_delta)
     component = largest_component(~background)
-
-    mask = Image.fromarray(component, mode="L")
-    mask = mask.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.MinFilter(5))
-    hard_mask = mask.point(lambda value: 255 if value > 8 else 0)
+    hard_mask = clean_subject_mask(rgba, component, white_min, neutral_delta, preserve_frame)
     alpha = hard_mask.filter(ImageFilter.GaussianBlur(edge_blur))
     bbox = hard_mask.getbbox()
 
@@ -141,7 +292,81 @@ def make_cutout(path: Path, white_min: int, black_max: int, neutral_delta: int, 
         raise RuntimeError(f"No foreground found in {path}")
 
     rgba.putalpha(alpha)
-    return rgba.crop(bbox)
+    return rgba if preserve_frame else rgba.crop(bbox)
+
+
+def visible_alpha_points(sprite: Image.Image) -> tuple[np.ndarray, np.ndarray]:
+    alpha = np.array(sprite.getchannel("A"), dtype=np.uint8)
+    ys, xs = np.where(alpha > 24)
+
+    return ys, xs
+
+
+def body_anchor_x_from_points(sprite: Image.Image, ys: np.ndarray, xs: np.ndarray) -> float:
+    if len(xs) == 0:
+        return sprite.width / 2
+
+    top = int(ys.min())
+    bottom = int(ys.max())
+    height = max(1, bottom - top + 1)
+    body_band = (ys >= top + round(height * 0.35)) & (ys <= top + round(height * 0.88))
+    anchor_pixels = xs[body_band]
+
+    if len(anchor_pixels) < 16:
+        anchor_pixels = xs
+
+    histogram = np.bincount(anchor_pixels, minlength=sprite.width)
+    window_width = max(24, round(sprite.width * 0.22))
+    window = np.ones(window_width, dtype=np.int32)
+    density = np.convolve(histogram, window, mode="same")
+    peak_x = int(np.argmax(density))
+    dense_band = np.abs(anchor_pixels - peak_x) <= window_width / 2
+    dense_pixels = anchor_pixels[dense_band]
+
+    if len(dense_pixels) >= 16:
+        return float(np.median(dense_pixels))
+
+    return float(np.median(anchor_pixels))
+
+
+def sprite_foot_anchor(sprite: Image.Image) -> tuple[float, float]:
+    ys, xs = visible_alpha_points(sprite)
+
+    if len(ys) == 0:
+        return sprite.width / 2, sprite.height
+
+    body_anchor_x = body_anchor_x_from_points(sprite, ys, xs)
+    top = int(ys.min())
+    bottom = int(ys.max())
+    height = max(1, bottom - top + 1)
+    foot_band_start = top + round(height * 0.58)
+    anchor_half_width = max(18, round(sprite.width * 0.22))
+    near_body = np.abs(xs - body_anchor_x) <= anchor_half_width
+    foot_zone = near_body & (ys >= foot_band_start)
+    foot_xs = xs[foot_zone]
+    foot_ys = ys[foot_zone]
+
+    if len(foot_ys) >= 16:
+        foot_floor = np.percentile(foot_ys, 92)
+        sole_zone = foot_ys >= foot_floor
+        sole_xs = foot_xs[sole_zone]
+        sole_ys = foot_ys[sole_zone]
+
+        if len(sole_ys) >= 4:
+            return float(np.median(sole_xs)), float(np.median(sole_ys))
+
+        return float(np.median(foot_xs)), float(np.percentile(foot_ys, 96))
+
+    lower_body = ys >= foot_band_start
+    lower_xs = xs[lower_body]
+    lower_ys = ys[lower_body]
+
+    if len(lower_ys) >= 16:
+        lower_floor = np.percentile(lower_ys, 90)
+        lower_sole = lower_ys >= lower_floor
+        return float(np.median(lower_xs[lower_sole])), float(np.percentile(lower_ys, 92))
+
+    return body_anchor_x, float(np.percentile(ys, 95))
 
 
 def place_on_canvas(
@@ -149,17 +374,31 @@ def place_on_canvas(
     canvas_size: tuple[int, int],
     anchor_x: int,
     ground_y: int,
-    scale: float,
+    scale: float | tuple[float, float],
+    preserve_frame: bool,
+    match_anchor: tuple[float, float] | None = None,
 ) -> Image.Image:
     width, height = canvas_size
+    scale_x, scale_y = scale if isinstance(scale, tuple) else (scale, scale)
     new_size = (
-        max(1, round(sprite.width * scale)),
-        max(1, round(sprite.height * scale)),
+        max(1, round(sprite.width * scale_x)),
+        max(1, round(sprite.height * scale_y)),
     )
     resized = sprite.resize(new_size, Image.Resampling.LANCZOS)
     canvas = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
-    x = anchor_x - resized.width // 2
-    y = ground_y - resized.height
+
+    if match_anchor is not None:
+        left, _top, right, bottom = sprite_alpha_bbox(sprite)
+        x = round(match_anchor[0] - ((left + right) / 2) * scale_x)
+        y = round(match_anchor[1] - bottom * scale_y)
+    elif preserve_frame:
+        x = round((width - resized.width) / 2)
+        y = round((height - resized.height) / 2)
+    else:
+        foot_anchor_x, foot_anchor_y = sprite_foot_anchor(sprite)
+        x = round(anchor_x - foot_anchor_x * scale_x)
+        y = round(ground_y - foot_anchor_y * scale_y)
+
     canvas.alpha_composite(resized, (x, y))
     return canvas
 
@@ -196,11 +435,13 @@ def build_animation(args: argparse.Namespace) -> None:
     output_dir = args.output_dir.expanduser().resolve()
     output_prefix = args.prefix or normalize_prefix(output_dir.name)
     match_size_path = args.match_size.expanduser().resolve() if args.match_size else None
+    preserve_frame = not args.crop_to_foreground and not match_size_path
 
     log(f"[setup] input: {input_dir}", quiet=args.quiet)
     log(f"[setup] output: {output_dir}", quiet=args.quiet)
     log(f"[setup] glob: {args.glob}", quiet=args.quiet)
     log(f"[setup] prefix: {output_prefix}", quiet=args.quiet)
+    log(f"[setup] placement: {'preserve-frame' if preserve_frame else 'crop-to-foreground'}", quiet=args.quiet)
     if match_size_path:
         log(f"[setup] match size: {match_size_path}", quiet=args.quiet)
 
@@ -227,33 +468,44 @@ def build_animation(args: argparse.Namespace) -> None:
     for index, path in enumerate(frame_paths, start=1):
         log(f"[cutout] {index}/{len(frame_paths)}: {path.name}", quiet=args.quiet)
         try:
-            cutouts.append(make_cutout(path, args.white_min, args.black_max, args.neutral_delta, args.edge_blur))
+            cutouts.append(make_cutout(path, args.white_min, BLACK_BACKGROUND_MAX, args.neutral_delta, args.edge_blur, preserve_frame))
         except Exception as exc:
             raise RuntimeError(f"Failed while cutting out frame {index}/{len(frame_paths)}: {path}") from exc
 
     max_width = max(sprite.width for sprite in cutouts)
     max_height = max(sprite.height for sprite in cutouts)
+    canvas_size = args.canvas or (image_size(match_size_path) if match_size_path else ((max_width, max_height) if preserve_frame else (483, 513)))
 
     if match_size_path:
         match_width, match_height = alpha_bbox_size(match_size_path)
+        bbox_sizes = [
+            sprite_alpha_bbox_size(sprite, f"frame {index}")
+            for index, sprite in enumerate(cutouts, start=1)
+        ]
         if args.match_size_basis == "first":
-            basis_width = cutouts[0].width
-            basis_height = cutouts[0].height
-            scales = [min(match_width / basis_width, match_height / basis_height)] * len(cutouts)
-            scale_summary = f"{scales[0]:.4f}"
+            basis_width, basis_height = bbox_sizes[0]
+            scales = [(match_width / basis_width, match_height / basis_height)] * len(cutouts)
+            scale_summary = f"x={scales[0][0]:.4f}, y={scales[0][1]:.4f}"
         elif args.match_size_basis == "each":
             scales = [
-                min(match_width / sprite.width, match_height / sprite.height)
-                for sprite in cutouts
+                (match_width / width, match_height / height)
+                for width, height in bbox_sizes
             ]
-            basis_width = max_width
-            basis_height = max_height
+            basis_width = max(width for width, _height in bbox_sizes)
+            basis_height = max(height for _width, height in bbox_sizes)
             scale_summary = "per-frame"
         else:
-            basis_width = max_width
-            basis_height = max_height
-            scales = [min(match_width / max_width, match_height / max_height)] * len(cutouts)
-            scale_summary = f"{scales[0]:.4f}"
+            basis_width = max(width for width, _height in bbox_sizes)
+            basis_height = max(height for _width, height in bbox_sizes)
+            scales = [(match_width / basis_width, match_height / basis_height)] * len(cutouts)
+            scale_summary = f"x={scales[0][0]:.4f}, y={scales[0][1]:.4f}"
+    elif preserve_frame:
+        match_width = None
+        match_height = None
+        basis_width = max_width
+        basis_height = max_height
+        scales = [min(canvas_size[0] / max_width, canvas_size[1] / max_height)] * len(cutouts)
+        scale_summary = f"{scales[0]:.4f}"
     else:
         match_width = None
         match_height = None
@@ -262,20 +514,24 @@ def build_animation(args: argparse.Namespace) -> None:
         scales = [min(args.max_width / max_width, args.max_height / max_height)] * len(cutouts)
         scale_summary = f"{scales[0]:.4f}"
 
-    anchor_x = args.anchor_x if args.anchor_x is not None else args.canvas[0] // 2
+    anchor_x = args.anchor_x if args.anchor_x is not None else canvas_size[0] // 2
+    ground_y = args.ground_y if args.ground_y is not None else canvas_size[1] - 28
+    match_anchor = alpha_bbox_anchor_for_canvas(match_size_path, canvas_size) if match_size_path else None
     written_paths = []
 
     if match_width is not None and match_height is not None:
         log(
             f"[scale] source max {max_width}x{max_height}, basis {args.match_size_basis} "
             f"{basis_width}x{basis_height}, match {match_width}x{match_height}, "
-            f"scale {scale_summary}, canvas {args.canvas[0]}x{args.canvas[1]}",
+            f"scale {scale_summary}, canvas {canvas_size[0]}x{canvas_size[1]}",
             quiet=args.quiet,
         )
+        if match_anchor is not None:
+            log(f"[position] matching reference anchor x={match_anchor[0]:.1f}, bottom={match_anchor[1]:.1f}", quiet=args.quiet)
     else:
         log(
             f"[scale] source max {max_width}x{max_height}, scale {scale_summary}, "
-            f"canvas {args.canvas[0]}x{args.canvas[1]}",
+            f"canvas {canvas_size[0]}x{canvas_size[1]}",
             quiet=args.quiet,
         )
 
@@ -284,7 +540,7 @@ def build_animation(args: argparse.Namespace) -> None:
         frame_number = index - args.start_index + 1
         filename = f"{output_prefix}_{index:02d}.png"
         log(f"[write] {frame_number}/{len(cutouts)}: {filename}", quiet=args.quiet)
-        canvas = place_on_canvas(sprite, args.canvas, anchor_x, args.ground_y, scale)
+        canvas = place_on_canvas(sprite, canvas_size, anchor_x, ground_y, scale, preserve_frame, match_anchor)
         output_path = output_dir / filename
         try:
             canvas.save(output_path, optimize=True)
@@ -300,12 +556,15 @@ def build_animation(args: argparse.Namespace) -> None:
 
     log("[done] animation build complete", quiet=args.quiet)
     print(f"frames: {len(written_paths)}")
-    print(f"canvas: {args.canvas[0]}x{args.canvas[1]}")
-    print(f"anchor: x={anchor_x}, ground_y={args.ground_y}")
+    print(f"canvas: {canvas_size[0]}x{canvas_size[1]}")
+    print(f"placement: {'preserve-frame' if preserve_frame else 'crop-to-foreground'}")
+    print(f"anchor: x={anchor_x}, ground_y={ground_y}")
     print(f"source max: {max_width}x{max_height}")
     if match_width is not None and match_height is not None:
         print(f"matched to: {match_width}x{match_height} ({match_size_path})")
         print(f"match basis: {args.match_size_basis}")
+        if match_anchor is not None:
+            print(f"matched anchor: x={match_anchor[0]:.1f}, bottom={match_anchor[1]:.1f}")
     print(f"scale: {scale_summary}")
     print(f"prefix: {output_prefix}")
     print(f"output: {output_dir}")
@@ -321,8 +580,8 @@ def main() -> None:
     parser.add_argument("output_dir", type=Path, help="Directory to write processed PNG frames into.")
     parser.add_argument("--prefix", default=None, help="Output filename prefix. Default: output folder name, normalized with underscores")
     parser.add_argument("--glob", default="*.png", help="Input file glob. Default: *.png")
-    parser.add_argument("--canvas", type=parse_size, default=(483, 513), help="Canvas size. Default: 483x513")
-    parser.add_argument("--ground-y", type=int, default=485, help="Bottom anchor y coordinate. Default: 485")
+    parser.add_argument("--canvas", type=parse_size, default=None, help="Canvas size. Default: original frame size, or 483x513 with --crop-to-foreground")
+    parser.add_argument("--ground-y", type=int, default=None, help="Bottom anchor y coordinate. Default: canvas height - 28")
     parser.add_argument("--anchor-x", type=int, default=None, help="Horizontal anchor. Default: canvas center")
     parser.add_argument("--max-width", type=int, default=320, help="Maximum foreground width after scaling. Default: 320")
     parser.add_argument("--max-height", type=int, default=480, help="Maximum foreground height after scaling. Default: 480")
@@ -333,10 +592,10 @@ def main() -> None:
         default="first",
         help="When using --match-size, match the first frame, largest frame, or every frame individually. Default: first",
     )
-    parser.add_argument("--white-min", type=int, default=238, help="Minimum channel value considered background. Default: 238")
-    parser.add_argument("--black-max", type=int, default=18, help="Maximum channel value considered black background. Default: 18")
+    parser.add_argument("--crop-to-foreground", action="store_true", help="Crop to the detected foreground and align by foot anchor. Default preserves the original frame position.")
+    parser.add_argument("--white-min", type=int, default=238, help="Minimum channel value treated as a light edge background color. Default: 238")
     parser.add_argument("--neutral-delta", type=int, default=24, help="Maximum RGB channel spread for neutral background. Default: 24")
-    parser.add_argument("--edge-blur", type=float, default=1.1, help="Alpha edge feather radius. Default: 1.1")
+    parser.add_argument("--edge-blur", type=float, default=0.6, help="Alpha edge feather radius. Default: 0.6")
     parser.add_argument("--start-index", type=int, default=1, help="First output frame number. Default: 1")
     parser.add_argument("--duration-ms", type=int, default=40, help="Preview GIF frame duration. Default: 40")
     parser.add_argument("--preview", type=Path, default=None, help="Optional preview GIF path.")

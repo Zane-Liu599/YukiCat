@@ -97,6 +97,7 @@ body {
   height: 300px;
   --face: 1;
   transform-origin: 50% 86%;
+  animation: cat-breathe 3600ms ease-in-out infinite;
   -webkit-app-region: no-drag;
 }
 
@@ -124,6 +125,10 @@ body {
   --face: -1;
 }
 
+.cat.is-mirrored .cat-frame {
+  transform: scaleX(-1);
+}
+
 @keyframes poke-hand {
   0%,
   100% {
@@ -131,5 +136,16 @@ body {
   }
   52% {
     transform: translate(-22%, -52%) scale(0.96);
+  }
+}
+
+@keyframes cat-breathe {
+  0%,
+  100% {
+    transform: scaleY(1) translateY(0);
+  }
+
+  50% {
+    transform: scaleY(1.008) translateY(-1px);
   }
 }
